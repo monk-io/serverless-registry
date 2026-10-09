@@ -310,6 +310,77 @@ async function seedReferrerIndex(name: string, subjectDigest: string, descriptor
   }
 }
 
+describe("anonymous pull", () => {
+  const bindings = env as Env;
+
+  afterEach(() => {
+    delete bindings.ALLOW_ANONYMOUS_PULL;
+  });
+
+  async function pushImage(name: string) {
+    const schema = await generateManifest(name);
+    await createManifest(name, schema, "v1");
+    return getImageManifestV2(schema);
+  }
+
+  test("is off by default", async () => {
+    await pushImage("anon-off");
+    const res = await fetchUnauth(createRequest("GET", "/v2/anon-off/manifests/v1", null));
+    expect(res.status).toBe(401);
+  });
+
+  test("pulls manifests, blobs and tags without credentials", async () => {
+    const manifest = await pushImage("anon-on");
+    bindings.ALLOW_ANONYMOUS_PULL = "true";
+
+    const head = await fetchUnauth(createRequest("HEAD", "/v2/anon-on/manifests/v1", null));
+    expect(head.status).toBe(200);
+    const get = await fetchUnauth(createRequest("GET", "/v2/anon-on/manifests/v1", null));
+    expect(get.status).toBe(200);
+    const blob = await fetchUnauth(createRequest("GET", `/v2/anon-on/blobs/${manifest.layers[0].digest}`, null));
+    expect(blob.status).toBe(200);
+    const tags = await fetchUnauth(createRequest("GET", "/v2/anon-on/tags/list", null));
+    expect(((await tags.json()) as TagsList).tags).toEqual(["v1"]);
+  });
+
+  test("still challenges on /v2/ so clients send credentials to push", async () => {
+    bindings.ALLOW_ANONYMOUS_PULL = "true";
+    const res = await fetchUnauth(createRequest("GET", "/v2/", null));
+    expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toContain("Basic");
+  });
+
+  test("does not list the catalog", async () => {
+    bindings.ALLOW_ANONYMOUS_PULL = "true";
+    const res = await fetchUnauth(createRequest("GET", "/v2/_catalog", null));
+    expect(res.status).toBe(401);
+  });
+
+  test("cannot push or delete", async () => {
+    await pushImage("anon-write");
+    bindings.ALLOW_ANONYMOUS_PULL = "true";
+    for (const [method, path] of [
+      ["POST", "/v2/anon-write/blobs/uploads/"],
+      ["PUT", "/v2/anon-write/manifests/v2"],
+      ["DELETE", "/v2/anon-write/manifests/v1"],
+    ]) {
+      const res = await fetchUnauth(createRequest(method, path, null));
+      expect(res.status, `${method} ${path}`).toBe(401);
+    }
+  });
+
+  test("wrong credentials are still rejected, not treated as anonymous", async () => {
+    await pushImage("anon-badcreds");
+    bindings.ALLOW_ANONYMOUS_PULL = "true";
+    const res = await fetchUnauth(
+      createRequest("GET", "/v2/anon-badcreds/manifests/v1", null, {
+        Authorization: usernamePasswordToAuth("hello", "wrong"),
+      }),
+    );
+    expect(res.status).toBe(401);
+  });
+});
+
 describe("v2 manifests", () => {
   test("HEAD /v2/:name/manifests/:reference NOT FOUND", async () => {
     const response = await fetch(createRequest("GET", "/v2/notfound/manifests/reference", null));

@@ -23,6 +23,8 @@ export interface Env {
   READONLY_PASSWORD?: string;
   PUSH_COMPATIBILITY_MODE?: PushCompatibilityMode;
   REGISTRIES_JSON?: string; // should be in the format of RegistryConfiguration[];
+  // "true" lets requests without credentials pull (GET/HEAD); pushing still needs USERNAME/PASSWORD.
+  ALLOW_ANONYMOUS_PULL?: string;
   REGISTRY_CLIENT: Registry;
 }
 
@@ -46,7 +48,9 @@ export default {
       return new AuthErrorResponse(request);
     }
 
-    const credentials = await authMethod.checkCredentials(request);
+    const credentials = isAnonymousPull(request, env)
+      ? { verified: true, payload: null }
+      : await authMethod.checkCredentials(request);
     if (!credentials.verified) {
       console.warn(`Not Authorized. authmode=${authMethod.authmode}. verified=false`);
       return new AuthErrorResponse(request);
@@ -80,6 +84,25 @@ export default {
     }
   },
 } satisfies ExportedHandler<Env>;
+
+/**
+ * A request with no Authorization header that only reads, on a registry with ALLOW_ANONYMOUS_PULL.
+ *
+ * GET /v2/ is left out on purpose: its 401 Basic challenge is how docker, crane and friends learn
+ * that this registry takes credentials. Without the challenge a logged-in client never sends them
+ * and every push fails. A client with no credentials ignores the challenge and pulls without them.
+ * /v2/_catalog is left out too, so anonymous clients cannot list every repository.
+ */
+const isAnonymousPull = (request: Request, env: Env): boolean => {
+  if (env.ALLOW_ANONYMOUS_PULL !== "true" || request.headers.has("Authorization")) {
+    return false;
+  }
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return false;
+  }
+  const path = new URL(request.url).pathname;
+  return path.startsWith("/v2/") && path !== "/v2/" && !path.startsWith("/v2/_catalog");
+};
 
 const ensureConfig = (env: Env): boolean => {
   if (!env.REGISTRY) {

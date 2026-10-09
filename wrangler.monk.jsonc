@@ -1,0 +1,32 @@
+// Monk's two registries, mirroring the two Azure container registries:
+//
+//   registry: registry.monk.io <- monkreleases.azurecr.io (monk, monk-ci)
+//   images:   images.monk.io   <- monkimages.azurecr.io   (monkec, template example apps)
+//
+// Deploy one with: npx wrangler deploy --minify --config wrangler.monk.jsonc --env registry
+//
+// Both allow anonymous pulls, like the ACRs do. Pushing needs USERNAME/PASSWORD, which are
+// Worker secrets (never put them here; this repo is public):
+//   npx wrangler secret put USERNAME --config wrangler.monk.jsonc --env registry
+{
+  "name": "monk-registry",
+  "main": "./index.ts",
+  "compatibility_date": "2024-09-09",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+
+  "env": {
+    "registry": {
+      "name": "monk-registry",
+      "routes": [{ "pattern": "registry.monk.io", "custom_domain": true }],
+      "r2_buckets": [{ "binding": "REGISTRY", "bucket_name": "monk-registry" }],
+      "vars": { "ALLOW_ANONYMOUS_PULL": "true" },
+    },
+    "images": {
+      "name": "monk-images",
+      "routes": [{ "pattern": "images.monk.io", "custom_domain": true }],
+      "r2_buckets": [{ "binding": "REGISTRY", "bucket_name": "monk-images" }],
+      "vars": { "ALLOW_ANONYMOUS_PULL": "true" },
+    },
+  },
+}
