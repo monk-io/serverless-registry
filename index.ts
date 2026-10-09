@@ -90,11 +90,13 @@ export default {
  *
  * GET /v2/ is left out on purpose: its 401 Basic challenge is how docker, crane and friends learn
  * that this registry takes credentials. Without the challenge a logged-in client never sends them
- * and every push fails. A client with no credentials ignores the challenge and pulls without them.
- * /v2/_catalog is left out too, so anonymous clients cannot list every repository.
+ * and every push fails. A client with no credentials answers the challenge with no credentials:
+ * docker sends no Authorization header, podman sends Basic auth with an empty username and
+ * password. Both count as anonymous. /v2/_catalog is left out too, so anonymous clients cannot
+ * list every repository.
  */
 const isAnonymousPull = (request: Request, env: Env): boolean => {
-  if (env.ALLOW_ANONYMOUS_PULL !== "true" || request.headers.has("Authorization")) {
+  if (env.ALLOW_ANONYMOUS_PULL !== "true" || !hasNoCredentials(request)) {
     return false;
   }
   if (request.method !== "GET" && request.method !== "HEAD") {
@@ -102,6 +104,22 @@ const isAnonymousPull = (request: Request, env: Env): boolean => {
   }
   const path = new URL(request.url).pathname;
   return path.startsWith("/v2/") && path !== "/v2/" && !path.startsWith("/v2/_catalog");
+};
+
+const hasNoCredentials = (request: Request): boolean => {
+  const authorization = request.headers.get("Authorization");
+  if (authorization === null) {
+    return true;
+  }
+  const [scheme, encoded = ""] = authorization.trim().split(/\s+/);
+  if (scheme !== "Basic") {
+    return false;
+  }
+  try {
+    return ["", ":"].includes(atob(encoded));
+  } catch {
+    return false;
+  }
 };
 
 const ensureConfig = (env: Env): boolean => {

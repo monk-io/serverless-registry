@@ -369,6 +369,21 @@ describe("anonymous pull", () => {
     }
   });
 
+  test("empty Basic credentials count as anonymous, as podman sends them", async () => {
+    await pushImage("anon-empty");
+    bindings.ALLOW_ANONYMOUS_PULL = "true";
+    for (const authorization of [`Basic ${btoa(":")}`, "Basic "]) {
+      const pull = await fetchUnauth(
+        createRequest("GET", "/v2/anon-empty/manifests/v1", null, { Authorization: authorization }),
+      );
+      expect(pull.status, authorization).toBe(200);
+      const push = await fetchUnauth(
+        createRequest("POST", "/v2/anon-empty/blobs/uploads/", null, { Authorization: authorization }),
+      );
+      expect(push.status, authorization).toBe(401);
+    }
+  });
+
   test("wrong credentials are still rejected, not treated as anonymous", async () => {
     await pushImage("anon-badcreds");
     bindings.ALLOW_ANONYMOUS_PULL = "true";
