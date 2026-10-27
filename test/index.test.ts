@@ -343,9 +343,84 @@ describe("anonymous pull", () => {
     expect(((await tags.json()) as TagsList).tags).toEqual(["v1"]);
   });
 
-  test("still challenges on /v2/ so clients send credentials to push", async () => {
+  test("challenges on /v2/ with the token flow, so docker can pull without credentials", async () => {
     bindings.ALLOW_ANONYMOUS_PULL = "true";
     const res = await fetchUnauth(createRequest("GET", "/v2/", null));
+    expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toBe(
+      'Bearer realm="https://registry.com/token",service="registry.com"',
+    );
+  });
+
+  test("docker's anonymous flow: token without credentials, then pull with it", async () => {
+    const manifest = await pushImage("anon-docker");
+    bindings.ALLOW_ANONYMOUS_PULL = "true";
+    const tokenRes = await fetchUnauth(
+      createRequest("GET", "/token?service=registry.com&scope=repository:anon-docker:pull", null),
+    );
+    expect(tokenRes.status).toBe(200);
+    const { token } = (await tokenRes.json()) as { token: string };
+    expect(token).toBe("anonymous");
+    const bearer = { Authorization: `Bearer ${token}` };
+
+    const ping = await fetchUnauth(createRequest("GET", "/v2/", null, bearer));
+    expect(ping.status).toBe(200);
+    const head = await fetchUnauth(createRequest("HEAD", "/v2/anon-docker/manifests/v1", null, bearer));
+    expect(head.status).toBe(200);
+    const blob = await fetchUnauth(
+      createRequest("GET", `/v2/anon-docker/blobs/${manifest.layers[0].digest}`, null, bearer),
+    );
+    expect(blob.status).toBe(200);
+
+    const catalog = await fetchUnauth(createRequest("GET", "/v2/_catalog", null, bearer));
+    expect(catalog.status).toBe(401);
+    const push = await fetchUnauth(createRequest("POST", "/v2/anon-docker/blobs/uploads/", null, bearer));
+    expect(push.status).toBe(401);
+    expect(push.headers.get("WWW-Authenticate")).toContain("Bearer");
+  });
+
+  test("docker's logged-in flow: credentials buy a token that can push", async () => {
+    bindings.ALLOW_ANONYMOUS_PULL = "true";
+    const tokenRes = await fetchUnauth(
+      createRequest("GET", "/token?service=registry.com", null, {
+        Authorization: usernamePasswordToAuth("hello", "world"),
+      }),
+    );
+    expect(tokenRes.status).toBe(200);
+    const { token } = (await tokenRes.json()) as { token: string };
+    expect(token).not.toBe("anonymous");
+
+    const ping = await fetchUnauth(createRequest("GET", "/v2/", null, { Authorization: `Bearer ${token}` }));
+    expect(ping.status).toBe(200);
+    const push = await fetchUnauth(
+      createRequest("POST", "/v2/anon-login/blobs/uploads/", null, { Authorization: `Bearer ${token}` }),
+    );
+    expect(push.status).toBe(202);
+  });
+
+  test("a token request with wrong credentials fails, so a bad docker login fails", async () => {
+    bindings.ALLOW_ANONYMOUS_PULL = "true";
+    const res = await fetchUnauth(
+      createRequest("GET", "/token?service=registry.com", null, {
+        Authorization: usernamePasswordToAuth("hello", "wrong"),
+      }),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  test("made-up bearer tokens and a forged anonymous marker get nothing extra", async () => {
+    await pushImage("anon-forged");
+    bindings.ALLOW_ANONYMOUS_PULL = "true";
+    const forged = await fetchUnauth(
+      createRequest("POST", "/v2/anon-forged/blobs/uploads/", null, { Authorization: "Bearer something" }),
+    );
+    expect(forged.status).toBe(401);
+    const ping = await fetchUnauth(createRequest("GET", "/v2/", null, { "X-Monk-Anonymous-Token": "1" }));
+    expect(ping.status).toBe(401);
+  });
+
+  test("no token endpoint when anonymous pull is off", async () => {
+    const res = await fetchUnauth(createRequest("GET", "/token", null));
     expect(res.status).toBe(401);
     expect(res.headers.get("WWW-Authenticate")).toContain("Basic");
   });
