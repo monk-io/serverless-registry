@@ -408,6 +408,57 @@ describe("anonymous pull", () => {
     expect(res.status).toBe(401);
   });
 
+  test("docker 29's logged-in flow: form POST /token with the password grant buys a token that can push", async () => {
+    bindings.ALLOW_ANONYMOUS_PULL = "true";
+    const tokenRes = await fetchUnauth(
+      new Request("https://registry.com/token", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "password",
+          service: "registry.com",
+          client_id: "docker",
+          access_type: "offline",
+          scope: "repository:anon-form:pull,push",
+          username: "hello",
+          password: "world",
+        }),
+      }),
+    );
+    expect(tokenRes.status).toBe(200);
+    const { access_token: token } = (await tokenRes.json()) as { access_token: string };
+    expect(token).not.toBe("anonymous");
+    const push = await fetchUnauth(
+      createRequest("POST", "/v2/anon-form/blobs/uploads/", null, { Authorization: `Bearer ${token}` }),
+    );
+    expect(push.status).toBe(202);
+
+    // and the token it handed out works as a refresh_token grant
+    const refreshed = await fetchUnauth(
+      new Request("https://registry.com/token", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ grant_type: "refresh_token", service: "registry.com", refresh_token: token }),
+      }),
+    );
+    expect(refreshed.status).toBe(200);
+    expect(((await refreshed.json()) as { access_token: string }).access_token).toBe(token);
+  });
+
+  test("a form POST /token with wrong credentials fails, and one with none gets the anonymous token", async () => {
+    bindings.ALLOW_ANONYMOUS_PULL = "true";
+    const form = (fields: Record<string, string>) =>
+      new Request("https://registry.com/token", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(fields),
+      });
+    const wrong = await fetchUnauth(form({ grant_type: "password", username: "hello", password: "wrong" }));
+    expect(wrong.status).toBe(401);
+    const none = await fetchUnauth(form({ grant_type: "password", service: "registry.com" }));
+    expect(((await none.json()) as { access_token: string }).access_token).toBe("anonymous");
+  });
+
   test("made-up bearer tokens and a forged anonymous marker get nothing extra", async () => {
     await pushImage("anon-forged");
     bindings.ALLOW_ANONYMOUS_PULL = "true";

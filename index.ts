@@ -162,13 +162,18 @@ const ANONYMOUS_TOKEN = "anonymous";
 const BASIC_TOKEN_PREFIX = "basic.";
 
 const issueToken = async (request: Request, authMethod: Authenticator): Promise<Response> => {
+  // Docker 29 asks with a form POST (OAuth2 password or refresh_token grant) and sends the
+  // credentials in the body, not in an Authorization header. Older clients send GET with Basic.
+  const authorized = request.method === "POST" ? await credentialsFromForm(request) : request;
   let token = ANONYMOUS_TOKEN;
-  if (!hasNoCredentials(request)) {
-    const credentials = await authMethod.checkCredentials(request);
+  if (!hasNoCredentials(authorized)) {
+    // Check as a read of /token whatever the verb was, so a pull-only user can still log in.
+    const probe = new Request(authorized.url, { method: "GET", headers: authorized.headers });
+    const credentials = await authMethod.checkCredentials(probe);
     if (!credentials.verified) {
       return new AuthErrorResponse(request);
     }
-    const [, encoded] = (request.headers.get("Authorization") ?? "").trim().split(/\s+/);
+    const [, encoded] = (authorized.headers.get("Authorization") ?? "").trim().split(/\s+/);
     token = BASIC_TOKEN_PREFIX + encoded;
   }
   return Response.json({
@@ -177,6 +182,30 @@ const issueToken = async (request: Request, authMethod: Authenticator): Promise<
     expires_in: 3600,
     issued_at: new Date().toISOString(),
   });
+};
+
+/**
+ * The request as a Basic-auth one: from the form's username and password (password grant), or
+ * from a refresh_token this Worker issued earlier. A form with neither stays as it came, so an
+ * Authorization header on the POST still works and no credentials means the anonymous token.
+ */
+const credentialsFromForm = async (request: Request): Promise<Request> => {
+  let form: FormData;
+  try {
+    form = await request.clone().formData();
+  } catch {
+    return request;
+  }
+  const headers = new Headers(request.headers);
+  const username = form.get("username");
+  const password = form.get("password");
+  const refresh = form.get("refresh_token");
+  if (typeof username === "string" && typeof password === "string" && (username || password)) {
+    headers.set("Authorization", `Basic ${btoa(`${username}:${password}`)}`);
+  } else if (typeof refresh === "string" && refresh.startsWith(BASIC_TOKEN_PREFIX)) {
+    headers.set("Authorization", `Basic ${refresh.slice(BASIC_TOKEN_PREFIX.length)}`);
+  }
+  return new Request(request.url, { method: request.method, headers });
 };
 
 const fromBearerToken = (request: Request): Request => {
